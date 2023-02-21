@@ -8,39 +8,43 @@ import pickle
 import numpy as np
 import cv2
 import threading
+import time
 
 
-class TkWrapper:
+class ThirdPartyOperator(threading.Thread):
+    def __init__(self, path_text):
+        threading.Thread.__init__(self)
+        self.path = path_text
+
+    def run(self) -> None:
+        os.popen(self.path)
+
+
+class TkWrapper(Tk):
     def __init__(self):
-        os.system(r"C:\ProgramData\AnyClick\Profiles\Plant 2.wcf")
+        Tk.__init__(self)
         self.is_wifi_connected = False
-        self.current_img = None
+        self.current_img = (False, None)
         self.current_screen = None
 
-        self.root = Tk()
         self.config_root()
 
-        self.img_label = Label(self.root)
+        self.img_label = Label(self)
         self.img_label.config(relief="ridge")
         self.img_label.grid(row=0, column=0)
 
-        self.logs = Listbox(self.root, height=30, width=50)
+        self.logs = Listbox(self, height=30, width=50)
         self.logs.grid(row=0, column=1)
         self.logging("JARVIS 구동 시작")
 
         self.logging("화면 받아오기 시작")
         self.interface_screen()
 
-        self.is_wifi_connected = self.check_wifi()
-        if not self.is_wifi_connected:
-            self.logging("사내망 wifi 연결 프로그램 구동")
-            self.run_subprocess(r"C:\Program Files\Unetsystem\AnyClick\AnyMgm.exe")
-            self.current_img = "wifi_manager"
-            pass
+        self.after(0, self.init_work)
 
     def config_root(self):
-        self.root.title("JARVIS")
-        self.root.minsize(1024, 768)
+        self.title("JARVIS")
+        self.minsize(1024, 768)
 
     def update_img_label(self, img):
         self.img_label.config(image=img)
@@ -60,11 +64,11 @@ class TkWrapper:
 
     def interface_screen(self):
         self.take_screen()
-        if self.current_img:
+        if self.current_img[0]:
             self.find_target()
         imgtk_screen = self.show_screen()
         self.update_img_label(imgtk_screen)
-        self.root.after(100, self.interface_screen)
+        self.after(100, self.interface_screen)
 
     def logging(self, text):
         now = datetime.datetime.now().strftime('%H:%M:%S')
@@ -83,19 +87,14 @@ class TkWrapper:
         self.logging("Wifi 네트워크 확인 안됨")
         return False
 
-    def run_subprocess(self, subprocess_path):
-        subprocess.run(subprocess_path)
-
     def take_img(self, img_data_name: str):
-        with open(r"D:\jarvis\pickles\{}}.imgData".format(img_data_name), 'rb') as f:
+        with open(r"D:\jarvis\pickles\{}.imgData".format(img_data_name), 'rb') as f:
             data = pickle.load(f)
-        self.current_img = data
+        self.current_img = (True, data)
 
     def find_target(self, threshold=0.95):
-        if not self.current_img:
-            return
-        h, w, d = self.current_img.shape
-        result = cv2.matchTemplate(self.current_screen, self.current_img, cv2.TM_CCOEFF_NORMED)
+        h, w, d = self.current_img[1].shape
+        result = cv2.matchTemplate(self.current_screen, self.current_img[1], cv2.TM_CCOEFF_NORMED)
         # cv2.imshow("target", self.current_img)
         # cv2.waitKey(0)
         # cv2.destroyAllWindows()
@@ -114,7 +113,16 @@ class TkWrapper:
             return None
 
     def start(self):
-        self.root.mainloop()
+        self.mainloop()
+
+    def init_work(self):
+        self.is_wifi_connected = self.check_wifi()
+        if self.is_wifi_connected:  # not
+            self.logging("사내망 wifi 연결 프로그램 구동")
+            wifi_manager = ThirdPartyOperator(r"C:\Program Files\Unetsystem\AnyClick\AnyMgm.exe")
+            wifi_manager.run()
+            self.take_img("wifi_manager")
+            pass
 
 
 if __name__ == '__main__':
