@@ -1,4 +1,4 @@
-import pyautogui as at
+
 import subprocess
 import numpy as np
 import cv2
