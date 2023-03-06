@@ -5,7 +5,7 @@ import cv2
 
 
 def set_target_img(img_data_name: str):
-    with open(r"D:\jarvis\pickles\{}.imgData".format(img_data_name), 'rb') as f:
+    with open(r".\pickles\{}.imgData".format(img_data_name), 'rb') as f:
         data: cv2 = pickle.load(f)
     return data, img_data_name
 

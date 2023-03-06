@@ -21,7 +21,7 @@ class ThirdPartyOperator(threading.Thread):
         os.popen(self.path)
 
 
-class AutomationOperator(threading.Thread):
+class AutomationManager(threading.Thread):
     def __init__(self, root):
         threading.Thread.__init__(self)
         self.root = root
@@ -29,8 +29,8 @@ class AutomationOperator(threading.Thread):
 
     def run(self):
         while True:
-            # 2초마다 작업 확인
-            time.sleep(2)
+            # 3초마다 작업 확인
+            time.sleep(0.1)
 
             # 1. 대기 작업 없거나 후속작업 차단 스위치가 켜져있으면 패스
             if len(self.root.operation_q) == 0 or self.prohibit_next_switch:
@@ -40,34 +40,52 @@ class AutomationOperator(threading.Thread):
             direction, parameter = self.root.operation_q.popleft()  # q: (작업, (파라미터))
             self.prohibit_next_switch = True
 
-            # 3. 현재 작업이 종료되었는지 계속 확인하는 루프 생성 -> 종료시 break
-            while True:
+            # 3. 가져온 작업을 하위 쓰레드에 생성 및 할당
+            worker = AutomationOperator(direction, parameter, self)
 
-                # 3-1. 현재 작업이 마우스 이동인 경우
-                if direction == "moveTo":
-                    # 3-1-1. 타겟 좌표 = 현재좌표 이면 스위치를 끄고 break
-                    if (at.position().x, at.position().y) == parameter:
-                        self.root.logging("이동작업 수행 완료 {}".format(at.position()))
-                        self.prohibit_next_switch = False
-                        break
+            # 4. 작업 시작 및 join으로 신규 작업 할당 방지
+            worker.start()
+            worker.join()
 
-                    # 3-1-2. 아니면 계속 마우스 이동
-                    else:
-                        at.moveTo(parameter)
+            self.prohibit_next_switch = False
 
-                # 3-2. 클릭인 경우
-                if direction == "click":
-                    at.click()
-                    self.root.logging("클릭 수행 완료 {}".format(at.position()))
-                    self.prohibit_next_switch = False
-                    break
 
-                # 3-3. 더블클릭인 경우
-                if direction == "doubleClick":
-                    at.doubleClick()
-                    self.root.logging("더블클릭 수행 완료 {}".format(at.position()))
-                    self.prohibit_next_switch = False
-                    break
+
+class AutomationOperator(threading.Thread):
+    def __init__(self, direction, parameter, manager):
+        threading.Thread.__init__(self)
+        self.direction = direction
+        self.parameter = parameter
+        self.manager = manager
+
+    def run(self):
+        # 3. 현재 작업이 종료되었는지 계속 확인하는 루프 생성 -> 종료시 break
+        while True:
+            # 2 초마다 작업 수행 확인
+            time.sleep(2)
+
+            # 3-1. 현재 작업이 마우스 이동인 경우
+            if self.direction == "moveTo":
+                # 3-1-1. 타겟 좌표 = 현재좌표 이면 스위치를 끄고 break
+                if (at.position().x, at.position().y) == self.parameter:
+                    self.manager.root.logging("이동작업 수행 완료 {}".format(at.position()))
+                    return
+
+                # 3-1-2. 아니면 계속 마우스 이동
+                else:
+                    at.moveTo(self.parameter)
+
+            # 3-2. 클릭인 경우
+            if self.direction == "click":
+                at.click()
+                self.manager.root.logging("클릭 수행 완료 {}".format(at.position()))
+                return
+
+            # 3-3. 더블클릭인 경우
+            if self.direction == "doubleClick":
+                at.doubleClick()
+                self.manager.root.logging("더블클릭 수행 완료 {}".format(at.position()))
+                return
 
 
 class TkWrapper(Tk):
@@ -78,11 +96,6 @@ class TkWrapper(Tk):
         self.operation_q = deque([])
 
         self.target_img = None, None
-
-        # region 자동화 쓰레드
-        self.operator = AutomationOperator(self)
-        self.operator.start()
-        # endregion
 
         self.config_layout()
 
@@ -183,8 +196,11 @@ class TkWrapper(Tk):
             self.logging("사내망 wifi 연결 프로그램 구동")
             wifi_manager = ThirdPartyOperator(r"C:\Program Files\Unetsystem\AnyClick\AnyMgm.exe")
             wifi_manager.run()
+
             self.target_img = set_target_img("wifi_manager")
             self.logging("타겟 이미지 설정: 사내망 wifi 연결 프로그램")
+
+            time.sleep(1)
 
             self.operation_q.append(("doubleClick", (None, None)))
             self.logging("더블클릭 작업 대기열 추가 완료")
@@ -192,4 +208,8 @@ class TkWrapper(Tk):
 
 if __name__ == '__main__':
     jarvis = TkWrapper()
+    # region 자동화 쓰레드
+    operator = AutomationManager(jarvis)
+    operator.start()
+    # endregion
     jarvis.mainloop()
