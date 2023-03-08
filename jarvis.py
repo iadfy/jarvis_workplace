@@ -4,6 +4,7 @@ from img import *
 import socket
 import subprocess
 import os
+import asyncio
 
 import threading
 import time
@@ -21,71 +22,12 @@ class ThirdPartyOperator(threading.Thread):
         os.popen(self.path)
 
 
-class AutomationManager(threading.Thread):
-    def __init__(self, root):
-        threading.Thread.__init__(self)
-        self.root = root
-        self.prohibit_next_switch = False
-
-    def run(self):
-        while True:
-            # 3초마다 작업 확인
-            time.sleep(0.1)
-
-            # 1. 대기 작업 없거나 후속작업 차단 스위치가 켜져있으면 패스
-            if len(self.root.operation_q) == 0 or self.prohibit_next_switch:
-                continue
-
-            # 2. 스위치가 꺼져있고, 대기 작업 있을 경우, 파싱해서 가져온 다음 스위치 켬
-            direction, parameter = self.root.operation_q.popleft()  # q: (작업, (파라미터))
-            self.prohibit_next_switch = True
-
-            # 3. 가져온 작업을 하위 쓰레드에 생성 및 할당
-            worker = AutomationOperator(direction, parameter, self)
-
-            # 4. 작업 시작 및 join으로 신규 작업 할당 방지
-            worker.start()
-            worker.join()
-
-            self.prohibit_next_switch = False
-
-
-
-class AutomationOperator(threading.Thread):
-    def __init__(self, direction, parameter, manager):
-        threading.Thread.__init__(self)
-        self.direction = direction
-        self.parameter = parameter
-        self.manager = manager
-
-    def run(self):
-        # 3. 현재 작업이 종료되었는지 계속 확인하는 루프 생성 -> 종료시 break
-        while True:
-            # 2 초마다 작업 수행 확인
-            time.sleep(2)
-
-            # 3-1. 현재 작업이 마우스 이동인 경우
-            if self.direction == "moveTo":
-                # 3-1-1. 타겟 좌표 = 현재좌표 이면 스위치를 끄고 break
-                if (at.position().x, at.position().y) == self.parameter:
-                    self.manager.root.logging("이동작업 수행 완료 {}".format(at.position()))
-                    return
-
-                # 3-1-2. 아니면 계속 마우스 이동
-                else:
-                    at.moveTo(self.parameter)
-
-            # 3-2. 클릭인 경우
-            if self.direction == "click":
-                at.click()
-                self.manager.root.logging("클릭 수행 완료 {}".format(at.position()))
-                return
-
-            # 3-3. 더블클릭인 경우
-            if self.direction == "doubleClick":
-                at.doubleClick()
-                self.manager.root.logging("더블클릭 수행 완료 {}".format(at.position()))
-                return
+class ImageTarget:
+    def __init__(self, img_name, adj=(0, 0)):
+        self.img: cv2 = set_target_img(img_name)
+        self.name = img_name
+        self.adj = adj
+        self.point = None
 
 
 class TkWrapper(Tk):
@@ -95,7 +37,7 @@ class TkWrapper(Tk):
 
         self.operation_q = deque([])
 
-        self.target_img = None, None
+        self.target_img = None
 
         self.config_layout()
 
@@ -118,64 +60,58 @@ class TkWrapper(Tk):
         self.logs = Listbox(self, height=30, width=50)
         self.logs.grid(row=0, column=1)
 
-        self.operation_wait = Listbox(self, height=30, width=50)
-        self.operation_wait.grid(row=1, column=0)
+        self.target_point_guide_label = Label(self)
+        self.target_point_guide_label.config(relief="ridge")
+        self.target_point_guide_label.grid(row=1, column=0)
 
-        # self.target_label = Label(self, relief="solid")
-        # self.target_label.grid(row=1, column=0)
-        # self.current_label = Label(self, relief="solid")
-        # self.current_label.grid(row=1, column=1)
-        # endregion
-
-    def update_img_label(self, img):
-        # img: ImgTk
-        self.img_label.config(image=img)
-        self.img_label.image = img
-
-    def img_routine(self):
-
-        current_point = (None, None)
-
-        # 1. 스크린 캡쳐
-        screen_capture: cv2 = bring_screen()
-
-        # 2. 타겟 이미지가 존재하면 타겟 이미지를 찾는다.
-        if self.target_img[0] is not None:
-            screen_capture, current_point = find_target(self.target_img[0], screen_capture)
-
-            # 2-1. 타겟 이미지를 찾았으면,
-            if current_point[0] is not None and current_point[1] is not None:
-                self.logging("타겟 이미지 발견")
-
-                # 2-1-1. 좌표 세부조정을 설정한다.
-                if self.target_img[1] == "wifi_manager":
-                    current_point = (current_point[0] - 65, current_point[1] - 115)
-
-                # 2-1-2. 타겟 이미지를 지운다.
-                self.target_img = None, None  # --> 그러면 find_target 차단됨
-
-        # 3. current point가 존재하고, 각 좌표가 None이 아니면 이동 명령을 큐에 전달
-        if current_point and current_point[0] is not None and current_point[1] is not None:
-            self.operation_q.append(("moveTo", current_point))
-            self.logging("작업 추가: {}으로 이동".format(current_point))
-
-        # 4. 이미지 TK로 변환
-        screen_capture = convert_screen(screen_capture)
-
-        # 5. 이미지 라벨 업데이트
-        self.update_img_label(screen_capture)
-
-        # 6. 현재 작업을 queue에 표시
-        self.operation_wait.delete(0, END)
-
-        for operation in self.operation_q:
-            self.operation_wait.insert(END, "{}: {}".format(operation[0], operation[1]))
-
-        self.after(100, self.img_routine)
+        self.target_point_label = Label(self)
+        self.target_point_label.config(relief="ridge")
+        self.target_point_label.grid(row=1, column=1)
 
     def logging(self, text):
         now = datetime.datetime.now().strftime('%H:%M:%S')
         self.logs.insert(END, "{} {}".format(now, text))
+
+    def load_img(self, img_name, adj=(0, 0)):
+        self.target_img = ImageTarget(img_name, adj)
+
+    def unload_img(self):
+        self.target_img = None
+
+    def img_routine(self):
+        def update_img_label(img):
+            # img: ImgTk
+            self.img_label.config(image=img)
+            self.img_label.image = img
+            return
+
+        # 1. 스크린 이미지 가져오기 -> cv2
+        screen: cv2 = bring_screen()
+
+        # 2. 타겟 이미지가 있다면 검색
+        if self.target_img:
+            cords = find_target(self.target_img.img, screen)
+
+            # 2-1. 타겟 이미지를 찾았으면,
+            if cords:
+                top_left, (w, h) = cords
+                bottom_right = top_left[0] + w, top_left[1] + h
+
+                # 2-1-1. 스크린 이미지에 타겟 윤곽 표시
+                mark_rectangular(screen, top_left, bottom_right)
+
+                # 2-1-2. 중심점 및 보정 계산하여 좌표 타겟 설정
+                center = (top_left[0] + bottom_right[0]) // 2, (top_left[1] + bottom_right[1]) // 2
+                self.target_img.point = center[0] + self.target_img.adj[0], center[1] + self.target_img.adj[1]
+
+        # 3. 이미지 TK로 변환
+        screen_tk = convert_screen(screen)
+
+        # 4. 이미지 라벨 업데이트
+        update_img_label(screen_tk)
+
+        # 5. 루프 수행
+        self.after(30, self.img_routine)
 
     def check_wifi(self):
         self.logging("Wifi 확인: 8.8.8.8에 접근 시도")
@@ -192,24 +128,38 @@ class TkWrapper(Tk):
 
     def init_work(self):
         self.is_wifi_connected = self.check_wifi()
-        if self.is_wifi_connected:  # not
+
+        # 와이파이 접속 여부 확인: 5초
+        for wifi_wait_second in range(0, 5):
+            if self.is_wifi_connected:
+                break
+            else:
+                time.sleep(1)
+
+        # 5초 이후 접속 확인 안되었을 경우 와이파이 구동
+        if not self.is_wifi_connected:
             self.logging("사내망 wifi 연결 프로그램 구동")
             wifi_manager = ThirdPartyOperator(r"C:\Program Files\Unetsystem\AnyClick\AnyMgm.exe")
             wifi_manager.run()
 
-            self.target_img = set_target_img("wifi_manager")
-            self.logging("타겟 이미지 설정: 사내망 wifi 연결 프로그램")
+            # 와이파이 구동 되었는지 확인 위한 이미지 타겟 설정
+            self.load_img("wifi_manager", (-65, -115))
+            self.logging("wifi_manager 검색 시작")
+            
+        # 구동 대기 및 이미지 찾기를 위한 루프 -> 딴데서 돌아야함. 얘들도 멈춘다.
+        while True:
+            
+            # 이미지를 찾았다면 좌표 설정이 되어있음, 좌표 가져오고 이미지 언로드함
+            if self.target_img.point:
+                self.logging("wifi_manager 확인 완료")
+                current_target_point = self.target_img.point
+                self.unload_img()
+                break
 
-            time.sleep(1)
-
-            self.operation_q.append(("doubleClick", (None, None)))
-            self.logging("더블클릭 작업 대기열 추가 완료")
+        # 이동명령 수행 루프
+                
 
 
 if __name__ == '__main__':
     jarvis = TkWrapper()
-    # region 자동화 쓰레드
-    operator = AutomationManager(jarvis)
-    operator.start()
-    # endregion
     jarvis.mainloop()
